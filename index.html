@@ -37,28 +37,22 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, addDoc, query, orderBy, onSnapshot, serverTimestamp, where, doc, setDoc, getDoc, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, addDoc, query, onSnapshot, serverTimestamp, where, doc, setDoc, getDoc, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // --- Configuration for GitHub Pages Deployment ---
-        // NOTE: The original variables (like __firebase_config) are only available 
-        // in the editing environment. To run this publicly, we must provide configuration 
-        // and guide the user to replace it.
-        
-        // Static ID for the application when deployed publicly
-        const appId = 'sudoku-logger-public-app'; 
-        
-      // For Firebase JS SDK v7.20.0 and later, measurementId is optional
-const firebaseConfig = {
-  apiKey: "AIzaSyAFH8p3QSqeb5iPoHud9i-6TYg0oFW5w44",
-  authDomain: "nyt-easy-sudoku-logger.firebaseapp.com",
-  projectId: "nyt-easy-sudoku-logger",
-  storageBucket: "nyt-easy-sudoku-logger.firebasestorage.app",
-  messagingSenderId: "1020411442541",
-  appId: "1:1020411442541:web:2de30a0dff2bde92f95664"
-};
-        
-        // No initial auth token is available on GitHub Pages
-        const initialAuthToken = null;
+        // --- MANDATORY Canvas Environment Configuration ---
+        // This ensures the application connects properly in the shared environment.
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'sudoku-logger-public-app';
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        let firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
+            // Fallback config if not in Canvas environment. User must replace API key for external use.
+            apiKey: "REPLACE_ME_WITH_YOUR_OWN_API_KEY", 
+            authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+            projectId: "YOUR_PROJECT_ID",
+            storageBucket: "YOUR_PROJECT_ID.appspot.com",
+            messagingSenderId: "SENDER_ID",
+            appId: "APP_ID"
+        };
+        // ---------------------------------------------------
 
         let app;
         let db;
@@ -70,12 +64,16 @@ const firebaseConfig = {
 
         // Helper function to convert M:SS to total seconds
         window.timeToSeconds = (minutes, seconds) => {
-            return parseInt(minutes || 0) * 60 + parseInt(seconds || 0);
+            // Ensure inputs are treated as numbers and handle empty strings gracefully
+            const m = parseInt(minutes, 10) || 0;
+            const s = parseInt(seconds, 10) || 0;
+            return m * 60 + s;
         };
 
         // Helper function to convert total seconds back to M:SS format
         window.secondsToMMSS = (totalSeconds) => {
-            if (totalSeconds === 0) return 'DNF';
+            // Only format if a time > 0 was entered, otherwise show DNF equivalent
+            if (totalSeconds === 0) return 'DNF'; 
             const minutes = Math.floor(totalSeconds / 60);
             const seconds = totalSeconds % 60;
             return `${minutes}:${String(seconds).padStart(2, '0')}`;
@@ -95,11 +93,14 @@ const firebaseConfig = {
         // Helper function to determine the day of the week from the date string
         window.getDayOfWeek = (dateString) => {
             if (!dateString) return 'N/A';
+            // Use 'T00:00:00' to force UTC midnight and avoid timezone issues
             const date = new Date(dateString + 'T00:00:00'); 
+            // Check for invalid date
+            if (isNaN(date.getTime())) return 'Invalid Date';
             return date.toLocaleDateString('en-US', { weekday: 'long' });
         };
 
-        // NEW: Helper function to format Firestore Timestamp object to a readable time string (HH:MM:SS)
+        // Helper function to format Firestore Timestamp object to a readable time string (HH:MM:SS)
         window.formatTimestamp = (timestamp) => {
             if (!timestamp || !timestamp.toDate) return 'N/A';
             const date = timestamp.toDate();
@@ -118,7 +119,8 @@ const firebaseConfig = {
             const p1Name = 'Sam';
             const p2Name = 'Bailey';
 
-            let csv = `Date,${p1Name} (MM:SS),${p1Name} (Total Seconds),${p2Name} (MM:SS),${p2Name} (Total Seconds),Day of Week,Time of Day,Completed Together,Notes,Winner,Time Saved (HH:MM:SS)\n`;
+            // Renamed 'Time Saved' header to 'Log Time' for clarity
+            let csv = `Date,${p1Name} (MM:SS),${p1Name} (Total Seconds),${p2Name} (MM:SS),${p2Name} (Total Seconds),Day of Week,Time of Day,Completed Together,Notes,Winner,Log Time (HH:MM:SS)\n`;
 
             currentLogs.forEach(log => {
                 const p1TimeMMSS = window.secondsToMMSS(log.player1TimeSec);
@@ -130,8 +132,8 @@ const firebaseConfig = {
                 // Clean up notes for CSV
                 const safeNotes = (log.notes || '').replace(/,/g, ';').replace(/\n/g, ' ');
 
-                // Get formatted time saved
-                const timeSaved = log.createdAt ? log.createdAt.toDate().toLocaleTimeString('en-US') : '';
+                // Get formatted log time
+                const logTime = log.createdAt ? log.createdAt.toDate().toLocaleTimeString('en-US') : '';
 
                 const row = [
                     log.date, 
@@ -144,7 +146,7 @@ const firebaseConfig = {
                     log.completedTogether ? 'Yes' : 'No', 
                     safeNotes, 
                     winnerText,
-                    timeSaved 
+                    logTime 
                 ];
                 csv += row.join(',') + '\n';
             });
@@ -169,9 +171,9 @@ const firebaseConfig = {
         // --- Firebase Initialization and Authentication ---
 
         const initFirebase = async () => {
-            // Check if user replaced the placeholder API key
-            if (firebaseConfig.apiKey.includes('REPLACE_ME_WITH_YOUR_OWN_API_KEY')) {
-                 document.getElementById('log-status').innerHTML = '<span class="text-red-600 font-semibold">Database ERROR: Not Connected.</span> Please replace the <code>firebaseConfig</code> placeholders in the code to enable sharing/saving.';
+            // Check for the placeholder API key if no environment config was loaded.
+            if (firebaseConfig.apiKey.includes('REPLACE_ME_WITH_YOUR_OWN_API_KEY') && typeof __firebase_config === 'undefined') {
+                 document.getElementById('log-status').innerHTML = '<span class="text-red-600 font-semibold">Database ERROR: Not Connected.</span> This app is in standalone mode. To enable saving, replace the <code>firebaseConfig</code> placeholders.';
                  return;
             }
 
@@ -199,8 +201,8 @@ const firebaseConfig = {
                         // Start listening to data ONLY once authenticated
                         setupListeners();
                         unsubscribe(); // Stop listening after successful check/sign-in
-                    } else if (userId === 'loading') {
-                        // User is null, attempt sign-in
+                    } else {
+                        // User is null, attempt sign-in or wait for initial sign-in
                         const attemptSignIn = async () => {
                             if (initialAuthToken) {
                                 await signInWithCustomToken(auth, initialAuthToken).catch(e => {
@@ -211,7 +213,10 @@ const firebaseConfig = {
                                 await signInAnonymously(auth);
                             }
                         };
-                        attemptSignIn();
+                        // Only attempt sign-in if we are in the 'loading' state
+                        if (userId === 'loading') {
+                            attemptSignIn();
+                        }
                     }
                 });
 
@@ -235,13 +240,7 @@ const firebaseConfig = {
                 return;
             }
             const form = document.getElementById('log-form');
-            if (!form.checkValidity()) {
-                form.reportValidity();
-                return;
-            }
-
-            const player1Name = document.getElementById('player1-name-input').value; 
-            const player2Name = document.getElementById('player2-name-input').value; 
+            // Manual validation for empty time fields since 'required' doesn't work well on number inputs combined with empty validation
             
             const p1Min = document.getElementById('p1-min').value;
             const p1Sec = document.getElementById('p1-sec').value;
@@ -256,14 +255,24 @@ const firebaseConfig = {
             const player1TimeSec = window.timeToSeconds(p1Min, p1Sec);
             const player2TimeSec = window.timeToSeconds(p2Min, p2Sec);
 
-            if (player1TimeSec === 0 && player2TimeSec === 0) {
-                 window.showModal('Error', 'Please input at least one player\'s time.');
+            if (!logDate) {
+                 window.showModal('Error', 'Please select a **Date**.');
                  return;
             }
+
             if (!timeOfDay) {
-                 window.showModal('Error', 'Please select the Time of Day.');
+                 window.showModal('Error', 'Please select the **Time of Day**.');
                  return;
             }
+
+            if (player1TimeSec === 0 && player2TimeSec === 0) {
+                 window.showModal('Error', 'Please input at least one player\'s time (Minutes or Seconds).');
+                 return;
+            }
+
+            // Fixed names from the input fields (now disabled, but values are correct)
+            const player1Name = document.getElementById('player1-name-input').value; 
+            const player2Name = document.getElementById('player2-name-input').value; 
 
 
             try {
@@ -309,8 +318,7 @@ const firebaseConfig = {
         const setupListeners = () => {
             if (!db || !isAuthReady) return; // Guard clause to ensure readiness
 
-            // FIX: Removed all orderBy clauses to avoid the required composite index.
-            // Sorting will now be handled entirely in JavaScript on the client side.
+            // Query without explicit orderBy to avoid index creation requirements
             const q = query(
                 getPublicCollectionRef('sudoku_logs')
             );
@@ -322,21 +330,21 @@ const firebaseConfig = {
                     logs.push({ id: doc.id, ...data });
                 });
                 
-                // FIX: Custom JavaScript sort: Primary sort by date (desc), Secondary sort by createdAt time (desc)
+                // Client-side sort: Primary sort by date (desc), Secondary sort by createdAt time (desc)
                 logs.sort((a, b) => {
                     // Convert date strings to comparable format (e.g., YYYY-MM-DD)
                     const dateA = a.date || '0000-00-00';
                     const dateB = b.date || '0000-00-00';
 
-                    // 1. Primary Sort: Date (Descending)
+                    // 1. Primary Sort: Date (Descending - latest date first)
                     if (dateA > dateB) return -1;
                     if (dateA < dateB) return 1;
 
-                    // 2. Secondary Sort (if dates are equal): Creation Time (Descending)
+                    // 2. Secondary Sort (if dates are equal): Creation Time (Descending - latest time first)
                     const timeA = a.createdAt ? a.createdAt.toMillis() : 0;
                     const timeB = b.createdAt ? b.createdAt.toMillis() : 0;
                     
-                    return timeB - timeA; // Descending order for time (latest first)
+                    return timeB - timeA; 
                 });
 
                 // Store logs globally for CSV export
@@ -379,31 +387,31 @@ const firebaseConfig = {
                 row.insertCell().textContent = log.date || 'N/A';
                 row.cells[0].className = 'py-3 px-2 font-medium text-gray-900 whitespace-nowrap text-xs'; 
                 
-                // NEW: Creation Time Cell
+                // 1. Log Time Cell
                 row.insertCell().textContent = window.formatTimestamp(log.createdAt);
                 row.cells[1].className = 'py-3 px-2 text-center text-xs text-gray-500 whitespace-nowrap';
 
-                // 1. Player 1 Time Cell (Sam)
+                // 2. Player 1 Time Cell (Sam)
                 row.insertCell().textContent = p1Time;
                 row.cells[2].className = `py-3 px-2 text-center text-xs ${log.player1TimeSec === 0 ? 'text-gray-400' : 'text-nyt'}`;
 
-                // 2. Player 2 Time Cell (Bailey)
+                // 3. Player 2 Time Cell (Bailey)
                 row.insertCell().textContent = p2Time;
                 row.cells[3].className = `py-3 px-2 text-center text-xs ${log.player2TimeSec === 0 ? 'text-gray-400' : 'text-nyt'}`;
 
-                // 3. Time of Day Cell
+                // 4. Time of Day Cell
                 row.insertCell().textContent = timeOfDay;
                 row.cells[4].className = 'py-3 px-2 text-center text-xs';
                 
-                // 4. Together Cell
+                // 5. Together Cell
                 row.insertCell().textContent = isTogether;
                 row.cells[5].className = `py-3 px-2 text-center text-xs font-medium ${log.completedTogether ? 'text-blue-600' : 'text-gray-500'}`;
 
-                // 5. Notes Cell
+                // 6. Notes Cell
                 row.insertCell().textContent = notesSnippet;
                 row.cells[6].className = 'py-3 px-2 text-left text-xs text-gray-700';
 
-                // 6. Winner Cell
+                // 7. Winner Cell
                 row.insertCell().innerHTML = `<span class="${winnerClass}">${winnerText}</span>`;
                 row.cells[7].className = 'py-3 px-4 text-center whitespace-nowrap text-xs'; 
             });
@@ -498,7 +506,7 @@ const firebaseConfig = {
                 <div class="mb-6">
                     <label for="log-notes" class="block text-sm font-medium text-gray-700 mb-2">Notes (Optional)</label>
                     <textarea id="log-notes" rows="2" placeholder="e.g., Felt easy today, solved with coffee, had to take a break halfway."
-                              class="w-full p-3 border border-gray-300 rounded-lg focus:ring-black focus:border-black transition shadow-sm resize-none"></textarea>
+                                 class="w-full p-3 border border-gray-300 rounded-lg focus:ring-black focus:border-black transition shadow-sm resize-none"></textarea>
                 </div>
 
 
@@ -521,7 +529,7 @@ const firebaseConfig = {
                     
                     <!-- Player 1 Time (Sam) -->
                     <div class="p-4 border rounded-lg bg-blue-50/50">
-                        <label id="player1-label" for="p1-min" class="block text-lg font-semibold text-blue-800 mb-3">Sam Time</label>
+                        <label id="player1-label" for="p1-min" class="block text-lg font-semibold text-blue-800 mb-3">Sam Time (Min:Sec)</label>
                         <div class="flex space-x-2 items-center">
                             <input type="number" id="p1-min" placeholder="Minutes" min="0" max="59"
                                    class="w-1/2 p-3 border border-gray-300 rounded-lg text-lg focus:ring-blue-500 focus:border-blue-500 transition shadow-sm">
@@ -534,7 +542,7 @@ const firebaseConfig = {
 
                     <!-- Player 2 Time (Bailey) -->
                     <div class="p-4 border rounded-lg bg-red-50/50">
-                        <label id="player2-label" for="p2-min" class="block text-lg font-semibold text-red-800 mb-3">Bailey Time</label>
+                        <label id="player2-label" for="p2-min" class="block text-lg font-semibold text-red-800 mb-3">Bailey Time (Min:Sec)</label>
                         <div class="flex space-x-2 items-center">
                             <input type="number" id="p2-min" placeholder="Minutes" min="0" max="59"
                                    class="w-1/2 p-3 border border-gray-300 rounded-lg text-lg focus:ring-red-500 focus:border-red-500 transition shadow-sm">
@@ -567,7 +575,8 @@ const firebaseConfig = {
                 <thead>
                     <tr class="bg-gray-50">
                         <th class="py-3 px-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Date</th>
-                        <th class="py-3 px-2 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Time Saved</th>
+                        <!-- RENAMED FROM 'TIME SAVED' TO 'LOG TIME' -->
+                        <th class="py-3 px-2 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Log Time</th>
                         <th id="th-p1-name" class="py-3 px-2 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Sam</th>
                         <th id="th-p2-name" class="py-3 px-2 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Bailey</th>
                         <th class="py-3 px-2 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">ToD</th>
