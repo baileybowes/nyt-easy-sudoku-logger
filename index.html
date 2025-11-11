@@ -39,10 +39,27 @@
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, addDoc, query, orderBy, onSnapshot, serverTimestamp, where, doc, setDoc, getDoc, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // Global variables provided by the Canvas environment
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
-        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        // --- Configuration for GitHub Pages Deployment ---
+        // NOTE: The original variables (like __firebase_config) are only available 
+        // in the editing environment. To run this publicly, we must provide configuration 
+        // and guide the user to replace it.
+        
+        // Static ID for the application when deployed publicly
+        const appId = 'sudoku-logger-public-app'; 
+        
+        // IMPORTANT: REPLACE THIS ENTIRE OBJECT with your actual Firebase project configuration 
+        // credentials (from your Firebase Console > Project Settings) to enable real database connectivity.
+        const firebaseConfig = {
+            apiKey: "AIzaSyB_REPLACE_ME_WITH_YOUR_OWN_API_KEY",
+            authDomain: "your-project-id.firebaseapp.com",
+            projectId: "your-project-id",
+            storageBucket: "your-project-id.appspot.com",
+            messagingSenderId: "1234567890",
+            appId: "1:1234567890:web:abcdef1234567890"
+        };
+        
+        // No initial auth token is available on GitHub Pages
+        const initialAuthToken = null;
 
         let app;
         let db;
@@ -153,10 +170,10 @@
         // --- Firebase Initialization and Authentication ---
 
         const initFirebase = async () => {
-            if (!firebaseConfig) {
-                console.error("Firebase configuration not found.");
-                document.getElementById('log-status').textContent = 'Error: Firebase configuration missing.';
-                return;
+            // Check if user replaced the placeholder API key
+            if (firebaseConfig.apiKey.includes('REPLACE_ME_WITH_YOUR_OWN_API_KEY')) {
+                 document.getElementById('log-status').innerHTML = '<span class="text-red-600 font-semibold">Database ERROR: Not Connected.</span> Please replace the <code>firebaseConfig</code> placeholders in the code to enable sharing/saving.';
+                 return;
             }
 
             try {
