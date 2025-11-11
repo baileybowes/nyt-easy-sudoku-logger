@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NYT Sudoku Daily Logger</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load Inter font -->
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f8f9fa;
+        }
+        /* Custom styles for the dark NYT-like accents */
+        .header-bg {
+            background-color: #000000;
+        }
+        .text-nyt {
+            color: #333333;
+        }
+        /* Ensuring button styles handle disabled state */
+        .btn-primary {
+            background-color: #1a1a1a;
+            transition: background-color 0.2s;
+        }
+        .btn-primary:hover:not(:disabled) {
+            background-color: #333333;
+        }
+        .btn-primary:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+    </style>
+    <!-- Load Firebase libraries -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc, query, orderBy, onSnapshot, serverTimestamp, where, doc, setDoc, getDoc, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global variables provided by the Canvas environment
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let app;
+        let db;
+        let auth;
+        let userId = 'loading'; 
+        let isAuthReady = false; // Flag for successful Firebase authentication
+        
+        let currentLogs = []; 
+
+        // Helper function to convert M:SS to total seconds
+        window.timeToSeconds = (minutes, seconds) => {
+            return parseInt(minutes || 0) * 60 + parseInt(seconds || 0);
+        };
+
+        // Helper function to convert total seconds back to M:SS format
+        window.secondsToMMSS = (totalSeconds) => {
+            if (totalSeconds === 0) return 'DNF';
+            const minutes = Math.floor(totalSeconds / 60);
+            const seconds = totalSeconds % 60;
+            return `${minutes}:${String(seconds).padStart(2, '0')}`;
+        };
+
+        // Helper function to convert seconds to a duration string (e.g., 2m 30s)
+        window.secondsToDuration = (totalSeconds) => {
+            if (totalSeconds === 0) return 'DNF';
+            const minutes = Math.floor(totalSeconds / 60);
+            const seconds = totalSeconds % 60;
+            const parts = [];
+            if (minutes > 0) parts.push(`${minutes}m`);
+            if (seconds > 0 || minutes === 0) parts.push(`${seconds}s`);
+            return parts.join(' ');
+        }
+        
+        // Helper function to determine the day of the week from the date string
+        window.getDayOfWeek = (dateString) => {
+            if (!dateString) return 'N/A';
+            const date = new Date(dateString + 'T00:00:00'); 
+            return date.toLocaleDateString('en-US', { weekday: 'long' });
+        };
+
+        // NEW: Helper function to format Firestore Timestamp object to a readable time string (HH:MM:SS)
+        window.formatTimestamp = (timestamp) => {
+            if (!timestamp || !timestamp.toDate) return 'N/A';
+            const date = timestamp.toDate();
+            // Use time string to show the exact moment it hit the database
+            return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        };
+        
+        // --- CSV Export Function ---
+        window.exportToCSV = () => {
+            if (currentLogs.length === 0) {
+                window.showModal('Export Error', 'There is no data to download yet!');
+                return;
+            }
+
+            // Fixed names for CSV export (Sam is P1, Bailey is P2)
+            const p1Name = 'Sam';
+            const p2Name = 'Bailey';
+
+            let csv = `Date,${p1Name} (MM:SS),${p1Name} (Total Seconds),${p2Name} (MM:SS),${p2Name} (Total Seconds),Day of Week,Time of Day,Completed Together,Notes,Winner,Time Saved (HH:MM:SS)\n`;
+
+            currentLogs.forEach(log => {
+                const p1TimeMMSS = window.secondsToMMSS(log.player1TimeSec);
+                const p2TimeMMSS = window.secondsToMMSS(log.player2TimeSec);
+                const dayOfWeek = window.getDayOfWeek(log.date); 
+                
+                const winnerText = determineWinner(log.player1TimeSec, log.player2TimeSec, p1Name, p2Name, { concise: true });
+                
+                // Clean up notes for CSV
+                const safeNotes = (log.notes || '').replace(/,/g, ';').replace(/\n/g, ' ');
+
+                // Get formatted time saved
+                const timeSaved = log.createdAt ? log.createdAt.toDate().toLocaleTimeString('en-US') : '';
+
+                const row = [
+                    log.date, 
+                    p1TimeMMSS, 
+                    log.player1TimeSec, 
+                    p2TimeMMSS, 
+                    log.player2TimeSec, 
+                    dayOfWeek, 
+                    log.timeOfDay || '', 
+                    log.completedTogether ? 'Yes' : 'No', 
+                    safeNotes, 
+                    winnerText,
+                    timeSaved 
+                ];
+                csv += row.join(',') + '\n';
+            });
+
+            const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+            const today = new Date().toISOString().slice(0, 10);
+            const filename = `sudoku_log_${today}.csv`;
+
+            const link = document.createElement("a");
+            if (link.download !== undefined) {
+                const url = URL.createObjectURL(blob);
+                link.setAttribute("href", url);
+                link.setAttribute("download", filename);
+                link.style.visibility = 'hidden';
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+            }
+        };
+
+
+        // --- Firebase Initialization and Authentication ---
+
+        const initFirebase = async () => {
+            if (!firebaseConfig) {
+                console.error("Firebase configuration not found.");
+                document.getElementById('log-status').textContent = 'Error: Firebase configuration missing.';
+                return;
+            }
+
+            try {
+                setLogLevel('debug');
+                app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+                
+                const logButton = document.getElementById('log-button');
+                logButton.disabled = true; // Start disabled
+
+                // Use onAuthStateChanged to ensure the user context is ready
+                const unsubscribe = onAuthStateChanged(auth, (user) => {
+                    if (user) {
+                        userId = user.uid;
+                        document.getElementById('user-id-display').textContent = `User ID: ${userId}`;
+                        
+                        // Authentication is complete, flag ready and enable logging
+                        isAuthReady = true;
+                        logButton.disabled = false;
+                        logButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 inline mr-2" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-11a1 1 0 10-2 0v3.586L7.707 9.293a1 1 0 00-1.414 1.414l3 3a1 1 0 001.414 0l3-3a1 1 0 00-1.414-1.414L11 10.586V7z" clip-rule="evenodd" /></svg> Log Times`;
+                        document.getElementById('log-status').textContent = 'Authenticated. Loading shared logs...';
+
+                        // Start listening to data ONLY once authenticated
+                        setupListeners();
+                        unsubscribe(); // Stop listening after successful check/sign-in
+                    } else if (userId === 'loading') {
+                        // User is null, attempt sign-in
+                        const attemptSignIn = async () => {
+                            if (initialAuthToken) {
+                                await signInWithCustomToken(auth, initialAuthToken).catch(e => {
+                                    console.error("Custom token sign-in failed, trying anonymous:", e);
+                                    signInAnonymously(auth); // Fallback
+                                });
+                            } else {
+                                await signInAnonymously(auth);
+                            }
+                        };
+                        attemptSignIn();
+                    }
+                });
+
+            } catch (error) {
+                console.error("Firebase initialization or sign-in failed:", error);
+                document.getElementById('log-status').textContent = `Authentication Error: ${error.message}`;
+            }
+        };
+
+        // --- Firestore Paths and Data Handlers ---
+
+        const getPublicCollectionRef = (collectionName) => {
+            return collection(db, `artifacts/${appId}/public/data/${collectionName}`);
+        };
+
+
+        // Function to handle form submission
+        window.submitDailyLog = async () => {
+            if (!isAuthReady) {
+                window.showModal('Wait', 'Still connecting to the shared database. Please wait a moment.');
+                return;
+            }
+            const form = document.getElementById('log-form');
+            if (!form.checkValidity()) {
+                form.reportValidity();
+                return;
+            }
+
+            const player1Name = document.getElementById('player1-name-input').value; 
+            const player2Name = document.getElementById('player2-name-input').value; 
+            
+            const p1Min = document.getElementById('p1-min').value;
+            const p1Sec = document.getElementById('p1-sec').value;
+            const p2Min = document.getElementById('p2-min').value;
+            const p2Sec = document.getElementById('p2-sec').value;
+            const logDate = document.getElementById('log-date').value;
+            
+            const timeOfDay = document.getElementById('log-tod').value;
+            const completedTogether = document.getElementById('log-together').checked;
+            const notes = document.getElementById('log-notes').value.trim();
+
+            const player1TimeSec = window.timeToSeconds(p1Min, p1Sec);
+            const player2TimeSec = window.timeToSeconds(p2Min, p2Sec);
+
+            if (player1TimeSec === 0 && player2TimeSec === 0) {
+                 window.showModal('Error', 'Please input at least one player\'s time.');
+                 return;
+            }
+            if (!timeOfDay) {
+                 window.showModal('Error', 'Please select the Time of Day.');
+                 return;
+            }
+
+
+            try {
+                document.getElementById('log-status').textContent = 'Saving times...';
+                document.getElementById('log-button').disabled = true;
+
+                const logsCollection = getPublicCollectionRef('sudoku_logs');
+                await addDoc(logsCollection, {
+                    date: logDate,
+                    player1Name: player1Name, 
+                    player2Name: player2Name, 
+                    player1TimeSec: player1TimeSec,
+                    player2TimeSec: player2TimeSec,
+                    timeOfDay: timeOfDay,
+                    completedTogether: completedTogether,
+                    notes: notes,
+                    loggedByUserId: userId,
+                    // Use serverTimestamp for accurate, database-side time tracking
+                    createdAt: serverTimestamp() 
+                });
+
+                document.getElementById('log-status').textContent = 'Times logged successfully! Updating table...';
+                
+                // Clear inputs
+                document.getElementById('p1-min').value = '';
+                document.getElementById('p1-sec').value = '';
+                document.getElementById('p2-min').value = '';
+                document.getElementById('p2-sec').value = '';
+                document.getElementById('log-together').checked = false;
+                document.getElementById('log-notes').value = '';
+
+            } catch (e) {
+                console.error("Error adding document: ", e);
+                document.getElementById('log-status').textContent = `Error: ${e.message}`;
+                window.showModal('Error', `Failed to log data: ${e.message}`);
+            } finally {
+                 document.getElementById('log-button').disabled = false;
+            }
+        };
+
+        // --- Real-Time Data Listener and Display ---
+
+        const setupListeners = () => {
+            if (!db || !isAuthReady) return; // Guard clause to ensure readiness
+
+            // FIX: Removed all orderBy clauses to avoid the required composite index.
+            // Sorting will now be handled entirely in JavaScript on the client side.
+            const q = query(
+                getPublicCollectionRef('sudoku_logs')
+            );
+
+            onSnapshot(q, (querySnapshot) => {
+                const logs = [];
+                querySnapshot.forEach((doc) => {
+                    const data = doc.data();
+                    logs.push({ id: doc.id, ...data });
+                });
+                
+                // FIX: Custom JavaScript sort: Primary sort by date (desc), Secondary sort by createdAt time (desc)
+                logs.sort((a, b) => {
+                    // Convert date strings to comparable format (e.g., YYYY-MM-DD)
+                    const dateA = a.date || '0000-00-00';
+                    const dateB = b.date || '0000-00-00';
+
+                    // 1. Primary Sort: Date (Descending)
+                    if (dateA > dateB) return -1;
+                    if (dateA < dateB) return 1;
+
+                    // 2. Secondary Sort (if dates are equal): Creation Time (Descending)
+                    const timeA = a.createdAt ? a.createdAt.toMillis() : 0;
+                    const timeB = b.createdAt ? b.createdAt.toMillis() : 0;
+                    
+                    return timeB - timeA; // Descending order for time (latest first)
+                });
+
+                // Store logs globally for CSV export
+                currentLogs = logs; 
+                renderLogs(logs);
+                document.getElementById('log-status').textContent = `Logs loaded (${logs.length} entries). Ready to log!`;
+            }, (error) => {
+                console.error("Error listening to logs:", error);
+                document.getElementById('log-status').textContent = `Real-time Data Error: ${error.message}`;
+            });
+        };
+
+        const renderLogs = (logs) => {
+            const tableBody = document.getElementById('log-table-body');
+            tableBody.innerHTML = ''; 
+
+            if (logs.length === 0) {
+                tableBody.innerHTML = '<tr><td colspan="8" class="py-4 text-center text-gray-500">No logs recorded yet. Start logging your times!</td></tr>';
+                return;
+            }
+            
+            const p1Name = 'Sam';
+            const p2Name = 'Bailey';
+
+            logs.forEach((log) => {
+                const row = tableBody.insertRow();
+                row.className = 'border-b hover:bg-gray-50 transition duration-150 ease-in-out';
+
+                const p1Time = window.secondsToMMSS(log.player1TimeSec);
+                const p2Time = window.secondsToMMSS(log.player2TimeSec);
+                
+                const winnerText = determineWinner(log.player1TimeSec, log.player2TimeSec, p1Name, p2Name, { concise: false });
+                const winnerClass = winnerText.includes('Draw') ? 'text-gray-600' : 'font-semibold text-green-700';
+                
+                const timeOfDay = log.timeOfDay || '—';
+                const isTogether = log.completedTogether ? 'Yes' : 'No';
+                const notesSnippet = (log.notes || '—').substring(0, 30) + (log.notes && log.notes.length > 30 ? '...' : '');
+
+                // 0. Date Cell
+                row.insertCell().textContent = log.date || 'N/A';
+                row.cells[0].className = 'py-3 px-2 font-medium text-gray-900 whitespace-nowrap text-xs'; 
+                
+                // NEW: Creation Time Cell
+                row.insertCell().textContent = window.formatTimestamp(log.createdAt);
+                row.cells[1].className = 'py-3 px-2 text-center text-xs text-gray-500 whitespace-nowrap';
+
+                // 1. Player 1 Time Cell (Sam)
+                row.insertCell().textContent = p1Time;
+                row.cells[2].className = `py-3 px-2 text-center text-xs ${log.player1TimeSec === 0 ? 'text-gray-400' : 'text-nyt'}`;
+
+                // 2. Player 2 Time Cell (Bailey)
+                row.insertCell().textContent = p2Time;
+                row.cells[3].className = `py-3 px-2 text-center text-xs ${log.player2TimeSec === 0 ? 'text-gray-400' : 'text-nyt'}`;
+
+                // 3. Time of Day Cell
+                row.insertCell().textContent = timeOfDay;
+                row.cells[4].className = 'py-3 px-2 text-center text-xs';
+                
+                // 4. Together Cell
+                row.insertCell().textContent = isTogether;
+                row.cells[5].className = `py-3 px-2 text-center text-xs font-medium ${log.completedTogether ? 'text-blue-600' : 'text-gray-500'}`;
+
+                // 5. Notes Cell
+                row.insertCell().textContent = notesSnippet;
+                row.cells[6].className = 'py-3 px-2 text-left text-xs text-gray-700';
+
+                // 6. Winner Cell
+                row.insertCell().innerHTML = `<span class="${winnerClass}">${winnerText}</span>`;
+                row.cells[7].className = 'py-3 px-4 text-center whitespace-nowrap text-xs'; 
+            });
+        };
+        
+        const determineWinner = (p1Time, p2Time, p1Name, p2Name, options = { concise: false }) => {
+            if (p1Time === 0 && p2Time === 0) return 'No Times';
+            
+            if (p1Time > 0 && p2Time === 0) return options.concise ? `${p1Name} (Solo)` : `${p1Name} only`;
+            if (p1Time === 0 && p2Time > 0) return options.concise ? `${p2Name} (Solo)` : `${p2Name} only`;
+            
+            if (p1Time < p2Time) {
+                const diff = p2Time - p1Time;
+                return options.concise ? p1Name : `${p1Name} by ${window.secondsToDuration(diff)}`;
+            } else if (p2Time < p1Time) {
+                const diff = p1Time - p2Time;
+                return options.concise ? p2Name : `${p2Name} by ${window.secondsToDuration(diff)}`;
+            } else {
+                return 'Draw!';
+            }
+        };
+
+        // --- Custom Modal/Error Handler ---
+        window.showModal = (title, message) => {
+            document.getElementById('modal-title').textContent = title;
+            document.getElementById('modal-message').textContent = message;
+            document.getElementById('custom-modal').classList.remove('hidden');
+        };
+
+        window.closeModal = () => {
+             document.getElementById('custom-modal').classList.add('hidden');
+        }
+        
+        // --- On Load ---
+        document.addEventListener('DOMContentLoaded', () => {
+            initFirebase();
+            // Set today's date as default
+            document.getElementById('log-date').valueAsDate = new Date();
+        });
+
+    </script>
+</head>
+<body class="min-h-screen p-4 md:p-8 bg-gray-50">
+    <div id="app-container" class="max-w-4xl mx-auto">
+        
+        <!-- Header -->
+        <header class="header-bg text-white p-6 rounded-t-xl shadow-lg mb-8">
+            <h1 class="text-3xl font-bold tracking-tight border-b-2 border-white/50 pb-2 mb-2">NYT Sudoku Daily Logger</h1>
+            <p class="text-sm opacity-80">Automated time tracking for Sam and Bailey. Times are stored publicly and securely.</p>
+            <p id="user-id-display" class="text-xs mt-2 opacity-60"></p>
+        </header>
+
+        <!-- Input Card -->
+        <div class="bg-white p-6 md:p-8 rounded-xl shadow-xl mb-10 border border-gray-200">
+            <h2 class="text-xl font-semibold mb-6 text-nyt">Log Today's Times and Context</h2>
+            
+            <!-- Status Indicator -->
+            <p id="log-status" class="text-sm text-gray-600 mb-4 h-5">Connecting to database...</p>
+
+            <form id="log-form">
+                <!-- Row 1: Date, Time of Day, and Togetherness -->
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6 items-end">
+                    <!-- Date Picker -->
+                    <div>
+                        <label for="log-date" class="block text-sm font-medium text-gray-700 mb-2">Date of Sudoku</label>
+                        <input type="date" id="log-date" required
+                               class="w-full p-3 border border-gray-300 rounded-lg focus:ring-black focus:border-black transition shadow-sm">
+                    </div>
+
+                    <!-- Time of Day Selector (Now with Evening) -->
+                    <div>
+                        <label for="log-tod" class="block text-sm font-medium text-gray-700 mb-2">Time of Day</label>
+                        <select id="log-tod" required
+                                class="w-full p-3 border border-gray-300 rounded-lg focus:ring-black focus:border-black transition shadow-sm">
+                            <option value="" disabled selected>Select Time...</option>
+                            <option value="Morning">Morning (5am - 12pm)</option>
+                            <option value="Afternoon">Afternoon (12pm - 5pm)</option>
+                            <option value="Evening">Evening (5pm - 5am)</option>
+                        </select>
+                    </div>
+
+                    <!-- Completed Together Checkbox -->
+                    <div class="flex justify-center items-center h-full pt-4 md:pt-0">
+                        <label for="log-together" class="flex items-center space-x-2 cursor-pointer p-3 bg-gray-100 rounded-lg w-full justify-center">
+                            <input type="checkbox" id="log-together" class="h-5 w-5 text-black rounded border-gray-300 focus:ring-black">
+                            <span class="text-sm font-medium text-gray-700 select-none">Completed Together?</span>
+                        </label>
+                    </div>
+                </div>
+                
+                <!-- Notes Textarea -->
+                <div class="mb-6">
+                    <label for="log-notes" class="block text-sm font-medium text-gray-700 mb-2">Notes (Optional)</label>
+                    <textarea id="log-notes" rows="2" placeholder="e.g., Felt easy today, solved with coffee, had to take a break halfway."
+                              class="w-full p-3 border border-gray-300 rounded-lg focus:ring-black focus:border-black transition shadow-sm resize-none"></textarea>
+                </div>
+
+
+                <!-- Player Name Inputs (FIXED) -->
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+                    <div>
+                        <label for="player1-name-input" class="block text-sm font-medium text-gray-700 mb-1">Player 1 Name</label>
+                        <input type="text" id="player1-name-input" value="Sam" required disabled
+                               class="w-full p-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 transition shadow-sm bg-gray-100 cursor-not-allowed">
+                    </div>
+                    <div>
+                        <label for="player2-name-input" class="block text-sm font-medium text-gray-700 mb-1">Player 2 Name</label>
+                        <input type="text" id="player2-name-input" value="Bailey" required disabled
+                               class="w-full p-3 border border-gray-300 rounded-lg focus:ring-red-500 focus:border-red-500 transition shadow-sm bg-gray-100 cursor-not-allowed">
+                    </div>
+                </div>
+
+                <!-- Time Inputs -->
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+                    
+                    <!-- Player 1 Time (Sam) -->
+                    <div class="p-4 border rounded-lg bg-blue-50/50">
+                        <label id="player1-label" for="p1-min" class="block text-lg font-semibold text-blue-800 mb-3">Sam Time</label>
+                        <div class="flex space-x-2 items-center">
+                            <input type="number" id="p1-min" placeholder="Minutes" min="0" max="59"
+                                   class="w-1/2 p-3 border border-gray-300 rounded-lg text-lg focus:ring-blue-500 focus:border-blue-500 transition shadow-sm">
+                            <span class="text-2xl font-bold">:</span>
+                            <input type="number" id="p1-sec" placeholder="Seconds" min="0" max="59"
+                                   class="w-1/2 p-3 border border-gray-300 rounded-lg text-lg focus:ring-blue-500 focus:border-blue-500 transition shadow-sm">
+                        </div>
+                        <p class="text-xs text-gray-500 mt-2">Leave both blank if DNF / not played.</p>
+                    </div>
+
+                    <!-- Player 2 Time (Bailey) -->
+                    <div class="p-4 border rounded-lg bg-red-50/50">
+                        <label id="player2-label" for="p2-min" class="block text-lg font-semibold text-red-800 mb-3">Bailey Time</label>
+                        <div class="flex space-x-2 items-center">
+                            <input type="number" id="p2-min" placeholder="Minutes" min="0" max="59"
+                                   class="w-1/2 p-3 border border-gray-300 rounded-lg text-lg focus:ring-red-500 focus:border-red-500 transition shadow-sm">
+                            <span class="text-2xl font-bold">:</span>
+                            <input type="number" id="p2-sec" placeholder="Seconds" min="0" max="59"
+                                   class="w-1/2 p-3 border border-gray-300 rounded-lg text-lg focus:ring-red-500 focus:border-red-500 transition shadow-sm">
+                        </div>
+                        <p class="text-xs text-gray-500 mt-2">Leave both blank if DNF / not played.</p>
+                    </div>
+                </div>
+                
+                <button type="button" onclick="submitDailyLog()" id="log-button" disabled
+                        class="btn-primary w-full p-4 text-white font-bold rounded-lg shadow-md hover:shadow-lg transition duration-300 ease-in-out">
+                    <span class="inline-block animate-spin mr-2 border-t-2 border-white rounded-full h-5 w-5"></span> Connecting...
+                </button>
+            </form>
+        </div>
+
+        <!-- Log Table -->
+        <div class="bg-white p-6 md:p-8 rounded-xl shadow-xl border border-gray-200 overflow-x-auto">
+            <h2 class="text-xl font-semibold mb-4 text-nyt">Sudoku Log & Leaderboard</h2>
+            <button onclick="exportToCSV()" 
+                    class="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium mb-4 hover:bg-green-700 transition">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 inline mr-1" viewBox="0 0 20 20" fill="currentColor">
+                    <path fill-rule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clip-rule="evenodd" />
+                </svg>
+                Download CSV
+            </button>
+            <table class="min-w-full divide-y divide-gray-200">
+                <thead>
+                    <tr class="bg-gray-50">
+                        <th class="py-3 px-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Date</th>
+                        <th class="py-3 px-2 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Time Saved</th>
+                        <th id="th-p1-name" class="py-3 px-2 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Sam</th>
+                        <th id="th-p2-name" class="py-3 px-2 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Bailey</th>
+                        <th class="py-3 px-2 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">ToD</th>
+                        <th class="py-3 px-2 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Together</th>
+                        <th class="py-3 px-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Notes</th>
+                        <th class="py-3 px-4 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Winner</th>
+                    </tr>
+                </thead>
+                <tbody id="log-table-body" class="bg-white divide-y divide-gray-200">
+                    <!-- Initial loading message with spinner -->
+                    <tr><td colspan="8" class="py-6 text-center text-gray-500">
+                        <span class="inline-block animate-spin mr-3 border-t-2 border-gray-400 border-r-2 border-b-2 border-gray-100 rounded-full h-5 w-5"></span>
+                        Connecting to shared data...
+                    </td></tr>
+                </tbody>
+            </table>
+        </div>
+
+    </div>
+
+    <!-- Custom Modal for Alerts/Errors (Replaces alert()) -->
+    <div id="custom-modal" class="fixed inset-0 bg-gray-600 bg-opacity-75 hidden flex items-center justify-center p-4 z-50">
+        <div class="bg-white rounded-xl shadow-2xl max-w-sm w-full p-6">
+            <h3 id="modal-title" class="text-lg font-bold mb-3 text-red-600">Error</h3>
+            <p id="modal-message" class="text-gray-700 mb-6">An error occurred.</p>
+            <button onclick="closeModal()" class="w-full p-3 bg-gray-200 text-gray-800 font-semibold rounded-lg hover:bg-gray-300 transition">Close</button>
+        </div>
+    </div>
+</body>
+</html>
